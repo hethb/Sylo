@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.vsix
+.env
+.DS_Store
+packages/web/dist/
+SYLO_CONTEXT.md

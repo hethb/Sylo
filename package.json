@@ -1,0 +1,16 @@
+{
+  "name": "sylo-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sylo — re-entry briefs for humans, context files for agents.",
+  "license": "MIT",
+  "workspaces": [
+    "packages/extension",
+    "packages/web"
+  ],
+  "scripts": {
+    "build:extension": "npm run build --workspace packages/extension",
+    "build:web": "npm run build --workspace packages/web",
+    "dev:web": "npm run dev --workspace packages/web"
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "name": "sylo",
+  "displayName": "Sylo",
+  "description": "Re-entry briefs for humans. Context files for agents. Always know where you left off.",
+  "version": "0.1.0",
+  "publisher": "sylo",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other", "AI"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sylo.showBrief",
+        "title": "Sylo: Show re-entry brief"
+      },
+      {
+        "command": "sylo.generateAgentContext",
+        "title": "Sylo: Generate agent context file"
+      },
+      {
+        "command": "sylo.generateAgentContextAndCopy",
+        "title": "Sylo: Copy agent context to clipboard"
+      },
+      {
+        "command": "sylo.openAgentContext",
+        "title": "Sylo: Open SYLO_CONTEXT.md"
+      },
+      {
+        "command": "sylo.configure",
+        "title": "Sylo: Configure"
+      },
+      {
+        "command": "sylo.clearHistory",
+        "title": "Sylo: Clear snapshot history"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "sylo.generateAgentContext",
+        "key": "ctrl+shift+alt+s",
+        "mac": "cmd+shift+alt+s",
+        "when": "editorFocus"
+      },
+      {
+        "command": "sylo.generateAgentContextAndCopy",
+        "key": "ctrl+shift+alt+c",
+        "mac": "cmd+shift+alt+c"
+      }
+    ],
+    "configuration": {
+      "title": "Sylo",
+      "properties": {
+        "sylo.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your OpenAI or Anthropic API key for generating briefs and context files"
+        },
+        "sylo.provider": {
+          "type": "string",
+          "enum": ["openai", "anthropic"],
+          "default": "openai",
+          "description": "LLM provider to use"
+        },
+        "sylo.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Model to use (e.g. gpt-4o-mini, claude-3-5-haiku-20241022)"
+        },
+        "sylo.awayThresholdMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Minutes away before a re-entry brief is triggered"
+        },
+        "sylo.autoShow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically show the brief when you return to VS Code"
+        },
+        "sylo.maxContextLines": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum lines of surrounding code to include in context snapshot"
+        },
+        "sylo.agentContextPath": {
+          "type": "string",
+          "default": "SYLO_CONTEXT.md",
+          "description": "Where to write the agent context file, relative to workspace root. Use 'CLAUDE.md' to feed directly into Claude Code."
+        },
+        "sylo.agentContextMode": {
+          "type": "string",
+          "enum": ["file", "clipboard", "both"],
+          "default": "both",
+          "description": "Whether to write the context to a file, copy to clipboard, or both"
+        },
+        "sylo.autoGenerateOnLeave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically generate an agent context file every time you leave VS Code (in addition to the human brief on return)"
+        },
+        "sylo.includeFullDiff": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include the full git diff in the agent context file (increases token usage but gives agents more detail)"
+        },
+        "sylo.agentContextTarget": {
+          "type": "string",
+          "enum": ["claude-code", "cursor", "copilot", "generic"],
+          "default": "generic",
+          "description": "Optimize the context file format for a specific agent"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sylo",
+          "title": "Sylo",
+          "icon": "assets/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sylo": [
+        {
+          "type": "webview",
+          "id": "sylo.panel",
+          "name": "Context"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sylo.generateAgentContext",
+          "group": "sylo@1",
+          "when": "editorFocus"
+        },
+        {
+          "command": "sylo.generateAgentContextAndCopy",
+          "group": "sylo@2"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --platform=node --target=node18",
+    "watch": "npm run build -- --watch",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.24.0"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
