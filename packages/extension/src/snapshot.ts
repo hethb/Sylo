@@ -1,47 +1,50 @@
 // Sylo — context snapshot engine.
 //
-// Captures the developer's full working context. This is the shared data layer
-// used by both the human re-entry brief generator and the agent context file
-// generator. It reads only editor metadata, cursor position, git diff, and
-// diagnostics — nothing is ever sent anywhere from here.
+// Captures the developer's working context, entirely locally. Before the
+// snapshot leaves the extension (to the Sylo API), all code-bearing text
+// fields are passed through redactSecrets() so lines that look like secret
+// assignments never leave the machine.
 
 import * as vscode from 'vscode'
 import { exec } from 'child_process'
 import * as path from 'path'
 
 export interface ContextSnapshot {
-  timestamp: number
+  capturedAt: number
   workspaceName: string
   workspaceRoot: string
-  openFiles: OpenFileSnapshot[]
-  activeFile: ActiveFileSnapshot | null
-  gitDiff: string | null
-  gitDiffFull: string | null // full diff, only populated when includeFullDiff=true
-  gitDiffStat: string | null // summary of changed files
-  gitBranch: string | null
-  recentCommitMessage: string | null
-  recentCommits: string[] // last 5 commit messages
-  terminalOutput: string | null
-  diagnostics: DiagnosticSnapshot[]
-  awayDurationMs: number
-  existingAgentContext: string | null // current contents of SYLO_CONTEXT.md if it exists
-}
 
-export interface OpenFileSnapshot {
-  path: string // relative to workspace root
-  languageId: string
-  isDirty: boolean
+  activeFile: ActiveFileSnapshot | null
+  openFiles: OpenFileSnapshot[]
+
+  git: {
+    branch: string | null
+    lastCommitMessage: string | null
+    lastFiveCommits: string[]
+    activeDiff: string | null // diff of active file only, max 100 lines
+    diffStat: string | null // git diff HEAD --stat
+  }
+
+  diagnostics: DiagnosticSnapshot[]
+
+  existingContextFile: string | null
 }
 
 export interface ActiveFileSnapshot {
-  path: string
+  relativePath: string
   languageId: string
   cursorLine: number
   cursorColumn: number
-  surroundingCode: string
+  surroundingCode: string // 60 lines around cursor, 30 above / 30 below
+  fullContent: string | null // full file content if under 200 lines
   selectionText: string | null
   isDirty: boolean
-  fullContent: string | null // full file content for small files (<200 lines)
+}
+
+export interface OpenFileSnapshot {
+  relativePath: string
+  languageId: string
+  isDirty: boolean
 }
 
 export interface DiagnosticSnapshot {
@@ -49,61 +52,100 @@ export interface DiagnosticSnapshot {
   severity: 'error' | 'warning'
   message: string
   line: number
-  source: string | null // e.g. "eslint", "typescript"
+  source: string | null
 }
 
 const GIT_TIMEOUT_MS = 5000
+const SURROUNDING_LINES_EACH_SIDE = 30
 const SMALL_FILE_LINE_LIMIT = 200
 const ACTIVE_DIFF_MAX_LINES = 100
-const FULL_DIFF_MAX_LINES = 300
 const MAX_DIAGNOSTICS = 15
 
+export interface CaptureResult {
+  snapshot: ContextSnapshot
+  redactedLineCount: number
+}
+
 /**
- * Capture a complete snapshot of the current workspace state.
- *
- * Never throws for missing git / no workspace — degrades gracefully to null
- * fields so the brief and agent-context generators can still run.
+ * Capture a snapshot of the current workspace state, with secrets redacted.
+ * Never throws — degrades to null fields when git / editor state is missing.
  */
-export async function captureSnapshot(
-  _context: vscode.ExtensionContext,
-  awayDurationMs: number
-): Promise<ContextSnapshot> {
+export async function captureSnapshot(): Promise<CaptureResult> {
   const config = vscode.workspace.getConfiguration('sylo')
-  const maxContextLines = config.get<number>('maxContextLines') ?? 50
-  const includeFullDiff = config.get<boolean>('includeFullDiff') ?? false
   const agentContextPath = config.get<string>('agentContextPath') || 'SYLO_CONTEXT.md'
 
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0]
   const workspaceRoot = workspaceFolder?.uri.fsPath ?? ''
   const workspaceName = workspaceFolder?.name ?? vscode.workspace.name ?? 'workspace'
 
-  const activeFile = await captureActiveFile(workspaceRoot, maxContextLines)
+  const activeFile = captureActiveFile(workspaceRoot)
   const openFiles = captureOpenFiles(workspaceRoot)
   const diagnostics = captureDiagnostics(workspaceRoot)
+  const git = await captureGit(workspaceRoot, activeFile?.relativePath ?? null)
+  const existingContextFile = await readExistingContextFile(workspaceFolder, agentContextPath)
 
-  const git = await captureGit(workspaceRoot, activeFile?.path ?? null, includeFullDiff)
-  const existingAgentContext = await readExistingAgentContext(workspaceFolder, agentContextPath)
+  const redaction = new RedactionCounter()
 
-  return {
-    timestamp: Date.now(),
+  const snapshot: ContextSnapshot = {
+    capturedAt: Date.now(),
     workspaceName,
     workspaceRoot,
+    activeFile: activeFile
+      ? {
+          ...activeFile,
+          surroundingCode: redaction.redact(activeFile.surroundingCode),
+          fullContent: activeFile.fullContent === null ? null : redaction.redact(activeFile.fullContent),
+          selectionText:
+            activeFile.selectionText === null ? null : redaction.redact(activeFile.selectionText)
+        }
+      : null,
     openFiles,
-    activeFile,
-    gitDiff: git.gitDiff,
-    gitDiffFull: git.gitDiffFull,
-    gitDiffStat: git.gitDiffStat,
-    gitBranch: git.gitBranch,
-    recentCommitMessage: git.recentCommitMessage,
-    recentCommits: git.recentCommits,
-    terminalOutput: null,
+    git: {
+      ...git,
+      activeDiff: git.activeDiff === null ? null : redaction.redact(git.activeDiff)
+    },
     diagnostics,
-    awayDurationMs,
-    existingAgentContext
+    existingContextFile: existingContextFile === null ? null : redaction.redact(existingContextFile)
+  }
+
+  return { snapshot, redactedLineCount: redaction.count }
+}
+
+// ---- Secret redaction ----
+
+const SECRET_LINE_PATTERN = /\b(API_KEY|SECRET|PASSWORD|TOKEN|PRIVATE_KEY|ACCESS_KEY)\s*[=:]/i
+
+/**
+ * Replace any line that looks like a secret assignment with a placeholder.
+ * Runs client-side, before the snapshot leaves the extension.
+ */
+export function redactSecrets(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (SECRET_LINE_PATTERN.test(line) ? '[redacted by Sylo]' : line))
+    .join('\n')
+}
+
+/** redactSecrets + a running count of redacted lines for output-channel logging. */
+class RedactionCounter {
+  count = 0
+
+  redact(text: string): string {
+    return text
+      .split('\n')
+      .map((line) => {
+        if (SECRET_LINE_PATTERN.test(line)) {
+          this.count++
+          return '[redacted by Sylo]'
+        }
+        return line
+      })
+      .join('\n')
   }
 }
 
-/** Path of `uri` relative to the workspace root, using forward slashes. */
+// ---- Capture helpers ----
+
 function toRelative(workspaceRoot: string, uri: vscode.Uri): string {
   if (uri.scheme !== 'file') {
     return uri.toString()
@@ -115,44 +157,28 @@ function toRelative(workspaceRoot: string, uri: vscode.Uri): string {
   return rel.split(path.sep).join('/')
 }
 
-async function captureActiveFile(
-  workspaceRoot: string,
-  maxContextLines: number
-): Promise<ActiveFileSnapshot | null> {
+function captureActiveFile(workspaceRoot: string): ActiveFileSnapshot | null {
   const editor = vscode.window.activeTextEditor
-  if (!editor) {
+  if (!editor || editor.document.uri.scheme !== 'file') {
     return null
   }
 
   const doc = editor.document
-  if (doc.uri.scheme !== 'file') {
-    return null
-  }
-
   const cursor = editor.selection.active
-  const cursorLine = cursor.line
-  const cursorColumn = cursor.character
 
-  // maxContextLines of code centered on the cursor.
-  const half = Math.floor(maxContextLines / 2)
-  const startLine = Math.max(0, cursorLine - half)
-  const endLine = Math.min(doc.lineCount - 1, cursorLine + half)
+  const startLine = Math.max(0, cursor.line - SURROUNDING_LINES_EACH_SIDE)
+  const endLine = Math.min(doc.lineCount - 1, cursor.line + SURROUNDING_LINES_EACH_SIDE)
   const surroundingRange = new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length)
-  const surroundingCode = doc.getText(surroundingRange)
-
-  const selectionText = editor.selection.isEmpty ? null : doc.getText(editor.selection)
-
-  const fullContent = doc.lineCount < SMALL_FILE_LINE_LIMIT ? doc.getText() : null
 
   return {
-    path: toRelative(workspaceRoot, doc.uri),
+    relativePath: toRelative(workspaceRoot, doc.uri),
     languageId: doc.languageId,
-    cursorLine,
-    cursorColumn,
-    surroundingCode,
-    selectionText,
-    isDirty: doc.isDirty,
-    fullContent
+    cursorLine: cursor.line + 1, // 1-based for humans and agents
+    cursorColumn: cursor.character + 1,
+    surroundingCode: doc.getText(surroundingRange),
+    fullContent: doc.lineCount < SMALL_FILE_LINE_LIMIT ? doc.getText() : null,
+    selectionText: editor.selection.isEmpty ? null : doc.getText(editor.selection),
+    isDirty: doc.isDirty
   }
 }
 
@@ -163,10 +189,7 @@ function captureOpenFiles(workspaceRoot: string): OpenFileSnapshot[] {
   for (const group of vscode.window.tabGroups.all) {
     for (const tab of group.tabs) {
       const input = tab.input
-      if (!(input instanceof vscode.TabInputText)) {
-        continue
-      }
-      if (input.uri.scheme !== 'file') {
+      if (!(input instanceof vscode.TabInputText) || input.uri.scheme !== 'file') {
         continue
       }
       const rel = toRelative(workspaceRoot, input.uri)
@@ -175,11 +198,10 @@ function captureOpenFiles(workspaceRoot: string): OpenFileSnapshot[] {
       }
       seen.add(rel)
 
-      // Language + dirty state come from the open document if VS Code has it loaded.
       const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === input.uri.toString())
       files.push({
-        path: rel,
-        languageId: doc?.languageId ?? languageIdFromPath(rel),
+        relativePath: rel,
+        languageId: doc?.languageId ?? path.extname(rel).replace('.', '') || 'plaintext',
         isDirty: doc?.isDirty ?? tab.isDirty
       })
     }
@@ -188,16 +210,10 @@ function captureOpenFiles(workspaceRoot: string): OpenFileSnapshot[] {
   return files
 }
 
-function languageIdFromPath(filePath: string): string {
-  const ext = path.extname(filePath).replace('.', '').toLowerCase()
-  return ext || 'plaintext'
-}
-
 function captureDiagnostics(workspaceRoot: string): DiagnosticSnapshot[] {
-  const all = vscode.languages.getDiagnostics()
   const collected: DiagnosticSnapshot[] = []
 
-  for (const [uri, diags] of all) {
+  for (const [uri, diags] of vscode.languages.getDiagnostics()) {
     if (uri.scheme !== 'file') {
       continue
     }
@@ -219,95 +235,63 @@ function captureDiagnostics(workspaceRoot: string): DiagnosticSnapshot[] {
     }
   }
 
-  // Errors before warnings, then limit to the most severe 15.
-  collected.sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
+  // Errors first, then cap at the 15 most severe.
+  collected.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'error' ? -1 : 1))
   return collected.slice(0, MAX_DIAGNOSTICS)
-}
-
-function severityRank(severity: 'error' | 'warning'): number {
-  return severity === 'error' ? 0 : 1
-}
-
-interface GitInfo {
-  gitDiff: string | null
-  gitDiffFull: string | null
-  gitDiffStat: string | null
-  gitBranch: string | null
-  recentCommitMessage: string | null
-  recentCommits: string[]
 }
 
 async function captureGit(
   workspaceRoot: string,
-  activeFileRel: string | null,
-  includeFullDiff: boolean
-): Promise<GitInfo> {
-  const empty: GitInfo = {
-    gitDiff: null,
-    gitDiffFull: null,
-    gitDiffStat: null,
-    gitBranch: null,
-    recentCommitMessage: null,
-    recentCommits: []
+  activeFileRel: string | null
+): Promise<ContextSnapshot['git']> {
+  const empty: ContextSnapshot['git'] = {
+    branch: null,
+    lastCommitMessage: null,
+    lastFiveCommits: [],
+    activeDiff: null,
+    diffStat: null
   }
 
   if (!workspaceRoot) {
     return empty
   }
 
-  const gitDiffStat = await runGit(workspaceRoot, ['diff', 'HEAD', '--stat'])
+  const [diffStat, branch, lastCommitMessage, lastFiveRaw] = await Promise.all([
+    runGit(workspaceRoot, ['diff', 'HEAD', '--stat']),
+    runGit(workspaceRoot, ['branch', '--show-current']),
+    runGit(workspaceRoot, ['log', '-1', '--pretty=%s']),
+    runGit(workspaceRoot, ['log', '-5', '--pretty=%s'])
+  ])
 
-  let gitDiff: string | null = null
+  let activeDiff: string | null = null
   if (activeFileRel) {
     const raw = await runGit(workspaceRoot, ['diff', 'HEAD', '--', activeFileRel])
-    gitDiff = truncateLines(raw, ACTIVE_DIFF_MAX_LINES)
+    activeDiff = truncateLines(raw, ACTIVE_DIFF_MAX_LINES)
   }
-
-  let gitDiffFull: string | null = null
-  if (includeFullDiff) {
-    const raw = await runGit(workspaceRoot, ['diff', 'HEAD'])
-    gitDiffFull = truncateLines(raw, FULL_DIFF_MAX_LINES)
-  }
-
-  const gitBranch = await runGit(workspaceRoot, ['branch', '--show-current'])
-  const recentCommitMessage = await runGit(workspaceRoot, ['log', '-1', '--pretty=%s'])
-  const recentCommitsRaw = await runGit(workspaceRoot, ['log', '-5', '--pretty=%s'])
-
-  const recentCommits = recentCommitsRaw
-    ? recentCommitsRaw
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0)
-    : []
 
   return {
-    gitDiff: emptyToNull(gitDiff),
-    gitDiffFull: emptyToNull(gitDiffFull),
-    gitDiffStat: emptyToNull(gitDiffStat),
-    gitBranch: emptyToNull(gitBranch),
-    recentCommitMessage: emptyToNull(recentCommitMessage),
-    recentCommits
+    branch: emptyToNull(branch),
+    lastCommitMessage: emptyToNull(lastCommitMessage),
+    lastFiveCommits: lastFiveRaw
+      ? lastFiveRaw
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0)
+      : [],
+    activeDiff: emptyToNull(activeDiff),
+    diffStat: emptyToNull(diffStat)
   }
 }
 
-/**
- * Run a git command in the workspace root with a hard 5-second timeout.
- * Returns the trimmed stdout, or null if git is unavailable / errors / times out.
- * Never throws.
- */
+/** Run a git command with a hard 5s timeout. Returns null on any failure. */
 function runGit(cwd: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    // Build a shell-safe command. Arguments are quoted to survive spaces/special chars.
     const command = ['git', ...args.map(shellQuote)].join(' ')
     exec(
       command,
       { cwd, timeout: GIT_TIMEOUT_MS, maxBuffer: 1024 * 1024, windowsHide: true },
       (err, stdout) => {
-        if (err) {
-          resolve(null)
-          return
-        }
-        resolve(stdout.trimEnd())
+        resolve(err ? null : stdout.trimEnd())
       }
     )
   })
@@ -328,28 +312,24 @@ function truncateLines(text: string | null, maxLines: number): string | null {
   if (lines.length <= maxLines) {
     return text
   }
-  const kept = lines.slice(0, maxLines).join('\n')
-  const omitted = lines.length - maxLines
-  return `${kept}\n… (${omitted} more line${omitted === 1 ? '' : 's'} truncated)`
+  return lines.slice(0, maxLines).join('\n')
 }
 
 function emptyToNull(value: string | null): string | null {
-  if (value === null) {
-    return null
-  }
-  return value.trim().length === 0 ? null : value
+  return value === null || value.trim().length === 0 ? null : value
 }
 
-async function readExistingAgentContext(
+async function readExistingContextFile(
   workspaceFolder: vscode.WorkspaceFolder | undefined,
   agentContextPath: string
 ): Promise<string | null> {
   if (!workspaceFolder) {
     return null
   }
-  const uri = vscode.Uri.joinPath(workspaceFolder.uri, agentContextPath)
   try {
-    const bytes = await vscode.workspace.fs.readFile(uri)
+    const bytes = await vscode.workspace.fs.readFile(
+      vscode.Uri.joinPath(workspaceFolder.uri, agentContextPath)
+    )
     return Buffer.from(bytes).toString('utf8')
   } catch {
     return null

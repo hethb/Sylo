@@ -1,12 +1,8 @@
 // Sylo — focus detection.
 //
-// Watches VS Code window focus. When the developer leaves (focus lost for more
-// than a short debounce) it captures a snapshot and fires onLeave. When they
-// return, it computes how long they were away and — if that clears the
-// configured threshold — fires onReturn with the snapshot taken at departure.
-//
-// Each VS Code window has its own FocusWatcher instance, so multiple windows
-// are tracked independently.
+// Watches window focus. When the developer leaves for longer than the
+// configured threshold and comes back, fires onReturn with the snapshot taken
+// at departure plus how long they were away.
 
 import * as vscode from 'vscode'
 import { captureSnapshot, ContextSnapshot } from './snapshot'
@@ -21,9 +17,7 @@ export class FocusWatcher {
   private started = false
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
-    private readonly onReturnCallback: (snapshot: ContextSnapshot) => void,
-    private readonly onLeaveCallback: (snapshot: ContextSnapshot) => void
+    private readonly onReturn: (snapshot: ContextSnapshot, awayDurationMs: number) => void
   ) {}
 
   start(): void {
@@ -61,23 +55,19 @@ export class FocusWatcher {
   }
 
   private async commitLeave(): Promise<void> {
-    // Focus may have returned during the debounce window.
     if (vscode.window.state.focused) {
       return
     }
     this.awayStartTime = Date.now()
     try {
-      const snapshot = await captureSnapshot(this.context, 0)
+      const { snapshot } = await captureSnapshot()
       this.snapshotBeforeLeaving = snapshot
-      this.onLeaveCallback(snapshot)
     } catch {
-      // Capturing the leaving snapshot must never surface as an error to the user.
       this.snapshotBeforeLeaving = null
     }
   }
 
   private handleFocusGained(): void {
-    // If we were still inside the debounce window, the developer never really left.
     this.clearLeaveTimer()
 
     if (this.awayStartTime === null) {
@@ -94,15 +84,14 @@ export class FocusWatcher {
       return
     }
 
-    const config = vscode.workspace.getConfiguration('sylo')
-    const thresholdMinutes = config.get<number>('awayThresholdMinutes') ?? 5
-    const thresholdMs = thresholdMinutes * 60 * 1000
+    const thresholdMinutes =
+      vscode.workspace.getConfiguration('sylo').get<number>('awayThresholdMinutes') ?? 5
 
-    if (awayDurationMs < thresholdMs) {
+    if (awayDurationMs < thresholdMinutes * 60 * 1000) {
       return
     }
 
-    this.onReturnCallback({ ...snapshot, awayDurationMs })
+    this.onReturn(snapshot, awayDurationMs)
   }
 
   private clearLeaveTimer(): void {

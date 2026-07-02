@@ -5,6 +5,7 @@
   "description": "Sylo — re-entry briefs for humans, context files for agents.",
   "license": "MIT",
   "workspaces": [
+    "packages/api",
     "packages/extension",
     "packages/web"
   ],

@@ -1,20 +1,19 @@
 // Sylo — snapshot & context file history.
 //
-// Stores the last 10 snapshots along with their generated brief and agent
-// context file. Persisted in VS Code globalState — never written to a server.
+// Stores the last 10 briefs and generated context files in VS Code
+// globalState — never on a server.
 
 import * as vscode from 'vscode'
 import { ContextSnapshot } from './snapshot'
-import { Brief } from './briefGenerator'
-import { AgentContextFile } from './agentContext'
+import { BriefResponse } from './apiClient'
+import { WrittenContextFile } from './agentContext'
 
 export interface HistoryEntry {
-  snapshot: ContextSnapshot
-  brief: Brief | null
-  briefError: string | null
-  agentContext: AgentContextFile | null
-  agentContextError: string | null
   id: string
+  createdAt: number
+  brief: BriefResponse | null
+  snapshot: ContextSnapshot | null
+  agentContext: WrittenContextFile | null
 }
 
 const STORAGE_KEY = 'sylo.history'
@@ -23,22 +22,18 @@ const MAX_ENTRIES = 10
 export class SnapshotHistory {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
-  /**
-   * Add an entry, or update the existing one with the same id in place.
-   * Keeps only the most recent MAX_ENTRIES.
-   */
-  add(entry: HistoryEntry): void {
-    const all = this.getAll()
-    const existingIndex = all.findIndex((e) => e.id === entry.id)
+  addBrief(brief: BriefResponse, snapshot: ContextSnapshot): void {
+    this.push({ id: genId(), createdAt: Date.now(), brief, snapshot, agentContext: null })
+  }
 
-    if (existingIndex !== -1) {
-      all[existingIndex] = entry
+  addAgentContext(agentContext: WrittenContextFile): void {
+    const latest = this.getLatest()
+    if (latest && latest.agentContext === null) {
+      latest.agentContext = agentContext
+      this.replaceLatest(latest)
     } else {
-      all.unshift(entry)
+      this.push({ id: genId(), createdAt: Date.now(), brief: null, snapshot: null, agentContext })
     }
-
-    const trimmed = all.slice(0, MAX_ENTRIES)
-    void this.context.globalState.update(STORAGE_KEY, trimmed)
   }
 
   getAll(): HistoryEntry[] {
@@ -49,12 +44,33 @@ export class SnapshotHistory {
     return this.getAll()[0] ?? null
   }
 
+  /** Most recent entry that has a brief. */
+  getLatestBrief(): HistoryEntry | null {
+    return this.getAll().find((e) => e.brief !== null) ?? null
+  }
+
+  /** Most recent entry that has a generated context file. */
+  getLatestAgentContext(): HistoryEntry | null {
+    return this.getAll().find((e) => e.agentContext !== null) ?? null
+  }
+
   clear(): void {
     void this.context.globalState.update(STORAGE_KEY, [])
   }
+
+  private push(entry: HistoryEntry): void {
+    const all = this.getAll()
+    all.unshift(entry)
+    void this.context.globalState.update(STORAGE_KEY, all.slice(0, MAX_ENTRIES))
+  }
+
+  private replaceLatest(entry: HistoryEntry): void {
+    const all = this.getAll()
+    all[0] = entry
+    void this.context.globalState.update(STORAGE_KEY, all)
+  }
 }
 
-/** Small collision-resistant id — avoids pulling in a nanoid dependency. */
-export function genId(): string {
+function genId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
