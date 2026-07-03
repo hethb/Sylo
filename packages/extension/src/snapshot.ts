@@ -201,7 +201,7 @@ function captureOpenFiles(workspaceRoot: string): OpenFileSnapshot[] {
       const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === input.uri.toString())
       files.push({
         relativePath: rel,
-        languageId: doc?.languageId ?? path.extname(rel).replace('.', '') || 'plaintext',
+        languageId: doc?.languageId ?? (path.extname(rel).replace('.', '') || 'plaintext'),
         isDirty: doc?.isDirty ?? tab.isDirty
       })
     }

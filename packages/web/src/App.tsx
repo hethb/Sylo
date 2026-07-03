@@ -43,7 +43,8 @@ function Hero() {
         <h1 className="text-5xl font-bold tracking-tight sm:text-6xl">Your context. Always ready.</h1>
         <p className="mx-auto mt-6 max-w-2xl text-lg text-ink/70">
           Sylo captures your working state when you leave VS Code. Come back to a 3-sentence brief. Fire up
-          Claude Code with a ready-made context file. Never explain yourself again.
+          Claude Code with a ready-made context file. No setup, no API key — it works the instant it's
+          installed.
         </p>
         <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
           <a
@@ -61,8 +62,8 @@ function Hero() {
         </div>
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
           <Badge>Free during beta</Badge>
-          <Badge>No screen recording</Badge>
-          <Badge>Your API key, your data</Badge>
+          <Badge>No API key required</Badge>
+          <Badge>Secrets auto-redacted</Badge>
         </div>
       </div>
     </Section>
@@ -145,10 +146,8 @@ call on line 91 of middleware.ts.`}
 
 function HowItWorks() {
   const steps = [
-    'Install Sylo and add your API key (30 seconds).',
-    'Work normally. Sylo watches your editor state in the background.',
-    'Come back from an interruption — see your 3-sentence re-entry brief automatically.',
-    'Starting an agent session? Press Cmd+Shift+Alt+S. Sylo writes SYLO_CONTEXT.md and copies it to your clipboard. Paste it into Claude Code, Cursor, or any LLM.'
+    'Install from the VS Code Marketplace. That’s the whole setup — no account, no API key, nothing to configure.',
+    'Press Cmd+Shift+Alt+S. Sylo writes SYLO_CONTEXT.md and copies it to your clipboard. Paste it into Claude Code, Cursor, or any LLM.'
   ]
   return (
     <Section className="border-t border-border">
@@ -163,6 +162,9 @@ function HowItWorks() {
           </li>
         ))}
       </ol>
+      <p className="mt-6 text-center text-sm text-ink/60">
+        Bonus: come back from any interruption and Sylo shows you a 3-sentence re-entry brief — automatically.
+      </p>
     </Section>
   )
 }
@@ -191,11 +193,11 @@ function Integrations() {
 
 function Privacy() {
   const points = [
-    'Your code never leaves your machine (except to your own API).',
-    'No screen recording, no keystroke logging, no clipboard access without your action.',
     'Sylo reads only open file metadata, cursor position, git diff, and error messages.',
-    'The context snapshot goes directly from VS Code to your own API key — Sylo never sees it.',
-    'SYLO_CONTEXT.md is automatically added to .gitignore.'
+    'Secrets and API keys are automatically redacted before anything leaves your machine.',
+    'No screen recording, no keystroke logging, no clipboard access without your action.',
+    'No account, no user identifiers — the snapshot carries no email, no machine ID.',
+    'Sylo never stores your code. SYLO_CONTEXT.md is automatically added to .gitignore.'
   ]
   return (
     <Section className="border-t border-border">
@@ -208,6 +210,22 @@ function Privacy() {
           </li>
         ))}
       </ul>
+    </Section>
+  )
+}
+
+function Faq() {
+  return (
+    <Section className="border-t border-border">
+      <h2 className="text-center text-3xl font-semibold">FAQ</h2>
+      <div className="mx-auto mt-10 max-w-3xl rounded-lg border border-border bg-surface p-6">
+        <h3 className="font-semibold text-ink">Is my code sent anywhere?</h3>
+        <p className="mt-3 text-ink/80">
+          Sylo sends your open file names, cursor context, git diff, and error messages to generate the
+          context file. Secrets and API keys are automatically redacted before anything leaves your
+          machine. Sylo never stores your code.
+        </p>
+      </div>
     </Section>
   )
 }
@@ -264,6 +282,7 @@ export default function App() {
       <div id="privacy">
         <Privacy />
       </div>
+      <Faq />
       <WhoItsFor />
       <Footer />
     </div>
